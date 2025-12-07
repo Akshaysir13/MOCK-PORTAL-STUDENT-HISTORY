@@ -96,10 +96,8 @@ export default function Test() {
     if (!testStarted) return;
     
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    let lastVisibilityTime = Date.now();
-    let visibilityChangeCount = 0;
-    let touchStartTime = 0;
-    let lastResizeTime = 0;
+    let lastActivityTime = Date.now();
+    let isWindowActive = true;
     
     const preventShortcuts = (e: KeyboardEvent) => {
       const screenshotKeys = [
@@ -152,72 +150,47 @@ export default function Test() {
       }
     };
 
+    const triggerScreenshotBlock = (reason: string) => {
+      showViolationWarning(`Screenshot detected - ${reason}`);
+      setScreenshotBlocked(true);
+    };
+
     const handleVisibilityChange = () => {
-      const now = Date.now();
-      const timeSinceLastChange = now - lastVisibilityTime;
-      
       if (document.hidden || document.visibilityState === 'hidden') {
-        if (isMobile) {
-          showViolationWarning('Mobile screenshot detected - VIOLATION RECORDED');
-          setScreenshotBlocked(true);
-        } else {
-          showViolationWarning('Screenshot detected - App focus lost');
-        }
-        
-        if (timeSinceLastChange < 3000) {
-          visibilityChangeCount++;
-          if (visibilityChangeCount >= 2) {
-            setScreenshotBlocked(true);
-          }
-        } else {
-          visibilityChangeCount = 1;
-        }
+        triggerScreenshotBlock('Screen capture detected');
       }
-      lastVisibilityTime = now;
     };
 
     const handleWindowBlur = () => {
-      if (isMobile) {
-        showViolationWarning('Mobile screenshot detected - Screen capture attempt');
-        setScreenshotBlocked(true);
-      }
-    };
-
-    const handleTouchStart = () => {
-      touchStartTime = Date.now();
-    };
-
-    const handleTouchCancel = () => {
-      const touchDuration = Date.now() - touchStartTime;
-      if (touchDuration < 200 && isMobile) {
-        showViolationWarning('Mobile screenshot detected - Touch interrupted');
-        setScreenshotBlocked(true);
-      }
-    };
-
-    const handleResize = () => {
-      const now = Date.now();
-      if (isMobile && now - lastResizeTime < 500) {
-        showViolationWarning('Mobile screenshot detected - Screen resize');
-        setScreenshotBlocked(true);
-      }
-      lastResizeTime = now;
-    };
-
-    const handlePageHide = () => {
-      if (isMobile) {
-        showViolationWarning('Mobile screenshot detected - Page hidden');
-        setScreenshotBlocked(true);
-      }
+      isWindowActive = false;
+      const blurTime = Date.now();
+      setTimeout(() => {
+        if (!isWindowActive && Date.now() - blurTime < 3000) {
+          triggerScreenshotBlock('App lost focus');
+        }
+      }, 500);
     };
 
     const handleWindowFocus = () => {
-      if (isMobile && document.visibilityState === 'visible') {
-        const now = Date.now();
-        if (now - lastVisibilityTime < 2000) {
-          showViolationWarning('Mobile screenshot detected - Quick focus change');
-          setScreenshotBlocked(true);
-        }
+      isWindowActive = true;
+      const now = Date.now();
+      if (now - lastActivityTime < 2000) {
+        triggerScreenshotBlock('Quick focus change detected');
+      }
+      lastActivityTime = now;
+    };
+
+    const handlePageHide = () => {
+      triggerScreenshotBlock('Page hidden');
+    };
+
+    const handleTouchEnd = () => {
+      lastActivityTime = Date.now();
+    };
+
+    const handleOrientationChange = () => {
+      if (isMobile) {
+        triggerScreenshotBlock('Orientation change during test');
       }
     };
 
@@ -227,12 +200,8 @@ export default function Test() {
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('focus', handleWindowFocus);
     window.addEventListener('pagehide', handlePageHide);
-    
-    if (isMobile) {
-      document.addEventListener('touchstart', handleTouchStart, { passive: true });
-      document.addEventListener('touchcancel', handleTouchCancel);
-      window.addEventListener('resize', handleResize);
-    }
+    document.addEventListener('touchend', handleTouchEnd, { passive: true });
+    window.addEventListener('orientationchange', handleOrientationChange);
 
     return () => {
       document.removeEventListener('keydown', preventShortcuts, true);
@@ -241,12 +210,8 @@ export default function Test() {
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pagehide', handlePageHide);
-      
-      if (isMobile) {
-        document.removeEventListener('touchstart', handleTouchStart);
-        document.removeEventListener('touchcancel', handleTouchCancel);
-        window.removeEventListener('resize', handleResize);
-      }
+      document.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('orientationchange', handleOrientationChange);
     };
   }, [testStarted]);
 
