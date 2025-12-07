@@ -96,9 +96,14 @@ export default function Test() {
     if (!testStarted) return;
     
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    let lastActivityTime = Date.now();
-    let isWindowActive = true;
     
+    let lastVisibilityTime = Date.now();
+    let visibilityChangeCount = 0;
+    let touchStartTime = 0;
+    let lastResizeTime = 0;
+    let screenshotAttempts = 0;
+    
+    // Desktop screenshot prevention (keyboard shortcuts)
     const preventShortcuts = (e: KeyboardEvent) => {
       const screenshotKeys = [
         () => e.key === 'PrintScreen',
@@ -150,58 +155,163 @@ export default function Test() {
       }
     };
 
-    const triggerScreenshotBlock = (reason: string) => {
-      showViolationWarning(`Screenshot detected - ${reason}`);
-      setScreenshotBlocked(true);
-    };
-
+    // ENHANCED MOBILE SCREENSHOT DETECTION
+    
+    // 1. Visibility API - Primary detection method
     const handleVisibilityChange = () => {
-      if (document.hidden || document.visibilityState === 'hidden') {
-        triggerScreenshotBlock('Screen capture detected');
-      }
-    };
-
-    const handleWindowBlur = () => {
-      isWindowActive = false;
-      const blurTime = Date.now();
-      setTimeout(() => {
-        if (!isWindowActive && Date.now() - blurTime < 3000) {
-          triggerScreenshotBlock('App lost focus');
-        }
-      }, 500);
-    };
-
-    const handleWindowFocus = () => {
-      isWindowActive = true;
       const now = Date.now();
-      if (now - lastActivityTime < 2000) {
-        triggerScreenshotBlock('Quick focus change detected');
+      const timeSinceLastChange = now - lastVisibilityTime;
+      
+      if (document.hidden || document.visibilityState === 'hidden') {
+        if (isMobile) {
+          // Rapid visibility changes indicate screenshot
+          if (timeSinceLastChange < 2000) {
+            visibilityChangeCount++;
+            if (visibilityChangeCount >= 2) {
+              screenshotAttempts++;
+              showViolationWarning(`Mobile screenshot detected (Attempt ${screenshotAttempts}) - VIOLATION RECORDED`);
+              setScreenshotBlocked(true);
+            }
+          } else {
+            visibilityChangeCount = 1;
+            screenshotAttempts++;
+            showViolationWarning(`Mobile screenshot detected - App focus lost (Attempt ${screenshotAttempts})`);
+            setScreenshotBlocked(true);
+          }
+        } else {
+          // Desktop behavior (less aggressive)
+          showViolationWarning('Screenshot detected - App focus lost');
+          if (timeSinceLastChange < 3000) {
+            visibilityChangeCount++;
+            if (visibilityChangeCount >= 2) {
+              setScreenshotBlocked(true);
+            }
+          } else {
+            visibilityChangeCount = 1;
+          }
+        }
       }
-      lastActivityTime = now;
+      lastVisibilityTime = now;
     };
 
-    const handlePageHide = () => {
-      triggerScreenshotBlock('Page hidden');
-    };
-
-    const handleTouchEnd = () => {
-      lastActivityTime = Date.now();
-    };
-
-    const handleOrientationChange = () => {
+    // 2. Window blur - Additional layer for mobile
+    const handleWindowBlur = () => {
       if (isMobile) {
-        triggerScreenshotBlock('Orientation change during test');
+        const now = Date.now();
+        if (now - lastVisibilityTime < 1000) {
+          screenshotAttempts++;
+          showViolationWarning(`Mobile screenshot detected via blur (Attempt ${screenshotAttempts})`);
+          setScreenshotBlocked(true);
+        }
       }
     };
 
+    // 3. Touch interruption (Android Power+Volume gesture)
+    const handleTouchStart = () => {
+      touchStartTime = Date.now();
+    };
+
+    const handleTouchCancel = () => {
+      if (!isMobile) return;
+      const touchDuration = Date.now() - touchStartTime;
+      if (touchDuration < 200) {
+        screenshotAttempts++;
+        showViolationWarning(`Mobile screenshot detected - Touch interrupted (Attempt ${screenshotAttempts})`);
+        setScreenshotBlocked(true);
+      }
+    };
+
+    // 4. Window resize (iOS/Android screenshot trigger)
+    const handleResize = () => {
+      if (!isMobile) return;
+      const now = Date.now();
+      if (now - lastResizeTime < 500 && lastResizeTime > 0) {
+        screenshotAttempts++;
+        showViolationWarning(`Mobile screenshot detected - Screen resize (Attempt ${screenshotAttempts})`);
+        setScreenshotBlocked(true);
+      }
+      lastResizeTime = now;
+    };
+
+    // 5. Page hide event
+    const handlePageHide = () => {
+      if (!isMobile) return;
+      const now = Date.now();
+      if (now - lastVisibilityTime < 1500) {
+        screenshotAttempts++;
+        showViolationWarning(`Mobile screenshot detected - Page hidden (Attempt ${screenshotAttempts})`);
+        setScreenshotBlocked(true);
+      }
+    };
+
+    // 6. Quick focus return (rapid app switching)
+    const handleWindowFocus = () => {
+      if (!isMobile) return;
+      const now = Date.now();
+      if (now - lastVisibilityTime < 1500 && document.visibilityState === 'visible') {
+        screenshotAttempts++;
+        showViolationWarning(`Mobile screenshot detected - Quick focus change (Attempt ${screenshotAttempts})`);
+        setScreenshotBlocked(true);
+      }
+    };
+
+    // 7. Android volume button detection
+    let volumeDownPressed = false;
+    let powerButtonPressed = false;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isMobile) return;
+      
+      // Android screenshot combo: Power + Volume Down
+      if (e.key === 'VolumeDown' || e.keyCode === 182) {
+        volumeDownPressed = true;
+      }
+      if (e.key === 'Power' || e.keyCode === 26) {
+        powerButtonPressed = true;
+      }
+      
+      if (volumeDownPressed && powerButtonPressed) {
+        screenshotAttempts++;
+        showViolationWarning(`Screenshot combo detected (Attempt ${screenshotAttempts})`);
+        setScreenshotBlocked(true);
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (!isMobile) return;
+      
+      if (e.key === 'VolumeDown' || e.keyCode === 182) {
+        volumeDownPressed = false;
+      }
+      if (e.key === 'Power' || e.keyCode === 26) {
+        powerButtonPressed = false;
+      }
+    };
+
+    // 8. Prevent mobile long-press screenshots
+    const preventLongPress = (e: TouchEvent) => {
+      if (!isMobile) return;
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+
+    // Attach event listeners
     document.addEventListener('keydown', preventShortcuts, true);
     document.addEventListener('keyup', preventShortcuts, true);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('focus', handleWindowFocus);
     window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('touchend', handleTouchEnd, { passive: true });
-    window.addEventListener('orientationchange', handleOrientationChange);
+    
+    if (isMobile) {
+      document.addEventListener('touchstart', handleTouchStart, { passive: true });
+      document.addEventListener('touchcancel', handleTouchCancel);
+      document.addEventListener('touchstart', preventLongPress, { passive: false });
+      window.addEventListener('resize', handleResize);
+      document.addEventListener('keydown', handleKeyDown);
+      document.addEventListener('keyup', handleKeyUp);
+    }
 
     return () => {
       document.removeEventListener('keydown', preventShortcuts, true);
@@ -210,8 +320,15 @@ export default function Test() {
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('touchend', handleTouchEnd);
-      window.removeEventListener('orientationchange', handleOrientationChange);
+      
+      if (isMobile) {
+        document.removeEventListener('touchstart', handleTouchStart);
+        document.removeEventListener('touchcancel', handleTouchCancel);
+        document.removeEventListener('touchstart', preventLongPress);
+        window.removeEventListener('resize', handleResize);
+        document.removeEventListener('keydown', handleKeyDown);
+        document.removeEventListener('keyup', handleKeyUp);
+      }
     };
   }, [testStarted]);
 
